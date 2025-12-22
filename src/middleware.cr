@@ -50,7 +50,12 @@ module PastoCache
     # Capture response headers for caching
     headers = Hash(String, String).new
     env.response.headers.each do |key, value|
-      headers[key] = value.to_s # Convert all values to strings
+      case value
+      when Array
+        headers[key] = value.join(", ") # Join array values with comma
+      else
+        headers[key] = value.to_s # Convert single values to strings
+      end
     end
 
     # Cache successful responses with headers
