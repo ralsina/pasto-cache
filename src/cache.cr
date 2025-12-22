@@ -8,9 +8,10 @@ module Pasto
     property content : String
     property mime_type : String
     property created_at : Time
-    property ttl : Int32? # Time to live in seconds, nil means no expiration
+    property ttl : Int32?                   # Time to live in seconds, nil means no expiration
+    property headers : Hash(String, String) # Store response headers
 
-    def initialize(@content : String, @mime_type : String, @ttl : Int32? = nil)
+    def initialize(@content : String, @mime_type : String, @ttl : Int32? = nil, @headers : Hash(String, String) = Hash(String, String).new)
       @created_at = Time.utc
     end
 
@@ -25,6 +26,7 @@ module Pasto
         mime_type:  @mime_type,
         created_at: @created_at.to_unix,
         ttl:        @ttl,
+        headers:    @headers,
       }.to_json
     end
 
@@ -35,7 +37,15 @@ module Pasto
       created_at = Time.unix(data["created_at"].as_i)
       ttl = data["ttl"]?.try(&.as_i?)
 
-      entry = CacheEntry.new(content, mime_type, ttl)
+      # Parse headers
+      headers = Hash(String, String).new
+      if headers_data = data["headers"]?
+        headers_data.as_h.each do |key, value|
+          headers[key] = value.as_s
+        end
+      end
+
+      entry = CacheEntry.new(content, mime_type, ttl, headers)
       entry.created_at = created_at
       entry
     end
@@ -90,11 +100,11 @@ module Pasto
       end
     end
 
-    def self.set(key : String, content : String, mime_type : String, ttl : Int32? = nil) : Bool
+    def self.set(key : String, content : String, mime_type : String, ttl : Int32? = nil, headers : Hash(String, String) = Hash(String, String).new) : Bool
       file_path = File.join(@@cache_dir, "#{key}.cache")
 
       begin
-        entry = CacheEntry.new(content, mime_type, ttl)
+        entry = CacheEntry.new(content, mime_type, ttl, headers)
         File.write(file_path, entry.to_json)
         true
       rescue
@@ -123,8 +133,8 @@ module Pasto
 
       # Include request body hash for POST/PUT requests
       body_hash = ""
-      if env.request.method.in?("POST", "PUT") && env.request.body
-        body = env.request.body.not_nil!.gets_to_end
+      if env.request.method.in?("POST", "PUT") && (request_body = env.request.body)
+        body = request_body.gets_to_end
         body_hash = OpenSSL::Digest.new("sha256").update(body).final.hexstring[0..15]
         # Reset body for downstream handlers
         env.request.body = IO::Memory.new(body)

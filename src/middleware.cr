@@ -47,9 +47,15 @@ module PastoCache
     # Read the captured content
     content = response_buffer.to_s
 
-    # Cache successful responses
+    # Capture response headers for caching
+    headers = Hash(String, String).new
+    env.response.headers.each do |key, value|
+      headers[key] = value if value.is_a?(String)
+    end
+
+    # Cache successful responses with headers
     if env.response.status_code == 200
-      Pasto::Cache.set(cache_key_str, content, mime_type, ttl)
+      Pasto::Cache.set(cache_key_str, content, mime_type, ttl, headers)
     end
 
     # Restore original output and write the buffer content
@@ -105,6 +111,12 @@ module PastoCache
     before_all do |env|
       if cached = handle_before_request(env)
         env.response.content_type = cached.mime_type
+
+        # Restore cached headers
+        cached.headers.each do |key, value|
+          env.response.headers[key] = value
+        end
+
         halt env, 200, cached.content
       end
     end
