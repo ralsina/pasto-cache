@@ -6,18 +6,34 @@ module PastoCache
   # Class variable to store original output objects for caching middleware
   @@original_outputs = {} of UInt64 => IO
 
+  # Check if request contains Cache-Control directive
+  private def self.cache_control_directive?(env, directive : String) : Bool
+    cache_control = env.request.headers["Cache-Control"]?
+    return false unless cache_control
+
+    # Parse Cache-Control header (can be comma-separated list)
+    directives = cache_control.downcase.split(',').map(&.strip)
+    directives.includes?(directive.downcase)
+  end
+
   # Handles cache check and response buffer setup before request processing
   #
   # This function should be called in a before_all block.
-  # Returns cached content if found, otherwise sets up response capture.
-  def self.handle_before_request(env) : Pasto::CacheEntry?
+  # Returns cached metadata if found, otherwise sets up response capture.
+  def self.handle_before_request(env) : Pasto::CacheMetadata?
     return nil unless cache_config = Pasto::Cache.find_cache_config(env.request.path)
+
+    # Respect client's Cache-Control: no-cache directive
+    if cache_control_directive?(env, "no-cache")
+      # Bypass cache, don't even look up cached response
+      return nil
+    end
 
     cache_key = Pasto::Cache.generate_cache_key(env)
 
-    # Check if we have a cached response
-    if cached_entry = Pasto::Cache.get(cache_key)
-      return cached_entry
+    # Check if we have a cached response (metadata from memory, very fast)
+    if metadata = Pasto::Cache.get(cache_key)
+      return metadata
     end
 
     # Set up response capture for this request
@@ -56,6 +72,13 @@ module PastoCache
       else
         headers[key] = value.to_s # Convert single values to strings
       end
+    end
+
+    # Respect client's Cache-Control: no-store directive
+    if cache_control_directive?(env, "no-store")
+      # Don't cache this response, skip storage
+      restore_original_output(env, original_output_id.to_s, content)
+      return
     end
 
     # Cache successful responses with headers
@@ -106,23 +129,41 @@ module PastoCache
   #
   # This is equivalent to:
   #   before_all { |env|
-  #     if cached = PastoCache.handle_before_request(env)
-  #       env.response.content_type = cached.mime_type
-  #       halt env, 200, cached.content
+  #     if metadata = PastoCache.handle_before_request(env)
+  #       # Serve from cache (metadata from memory, body from memory or disk)
   #     end
   #   }
   #   after_all { |env| PastoCache.handle_after_request(env) }
   def self.add_cache_middleware
     before_all do |env|
-      if cached = handle_before_request(env)
-        env.response.content_type = cached.mime_type
+      if metadata = handle_before_request(env)
+        threshold = Pasto::Cache.sendfile_threshold
+
+        # Generate cache key (same as in handle_before_request)
+        cache_key = Pasto::Cache.generate_cache_key(env)
+
+        # Set content type and headers
+        env.response.content_type = metadata.mime_type
 
         # Restore cached headers
-        cached.headers.each do |key, value|
+        metadata.headers.each do |key, value|
           env.response.headers[key] = value
         end
 
-        halt env, 200, cached.content
+        # Decide how to serve the response based on size
+        if metadata.body_size >= threshold && File.exists?(metadata.body_path)
+          # Large response: use send_file for zero-copy disk -> socket transfer
+          send_file env, metadata.body_path
+        else
+          # Small response: load into memory and send
+          if body_content = Pasto::Cache.get_body(cache_key)
+            halt env, 200, body_content
+          else
+            # Body file missing, treat as cache miss
+            env.response.status_code = 503
+            "Cache error: body file missing"
+          end
+        end
       end
     end
 
