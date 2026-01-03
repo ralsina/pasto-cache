@@ -22,54 +22,6 @@ module Pasto
     end
   end
 
-  # Cache entry with content (legacy, kept for backwards compatibility)
-  class CacheEntry
-    property content : String
-    property mime_type : String
-    property created_at : Time
-    property ttl : Int32?                   # Time to live in seconds, nil means no expiration
-    property headers : Hash(String, String) # Store response headers
-
-    def initialize(@content : String, @mime_type : String, @ttl : Int32? = nil, @headers : Hash(String, String) = Hash(String, String).new)
-      @created_at = Time.utc
-    end
-
-    def expired? : Bool
-      return false unless ttl_val = ttl
-      (Time.utc - @created_at).total_seconds > ttl_val
-    end
-
-    def to_json : String
-      {
-        content:    @content,
-        mime_type:  @mime_type,
-        created_at: @created_at.to_unix,
-        ttl:        @ttl,
-        headers:    @headers,
-      }.to_json
-    end
-
-    def self.from_json(json : String) : CacheEntry
-      data = Hash(String, JSON::Any).from_json(json)
-      content = data["content"].as_s
-      mime_type = data["mime_type"].as_s
-      created_at = Time.unix(data["created_at"].as_i)
-      ttl = data["ttl"]?.try(&.as_i?)
-
-      # Parse headers
-      headers = Hash(String, String).new
-      if headers_data = data["headers"]?
-        headers_data.as_h.each do |key, value|
-          headers[key] = value.as_s
-        end
-      end
-
-      entry = CacheEntry.new(content, mime_type, ttl, headers)
-      entry.created_at = created_at
-      entry
-    end
-  end
-
   # Cache configuration for endpoints
   struct CacheConfig
     property path_regex : Regex
@@ -165,21 +117,6 @@ module Pasto
         true
       rescue
         false
-      end
-    end
-
-    # Legacy method for backwards compatibility - now uses new storage format
-    def self.get_legacy(key : String) : CacheEntry?
-      file_path = File.join(@@cache_dir, "#{key}.cache")
-      return nil unless File.exists?(file_path)
-
-      begin
-        json = File.read(file_path)
-        entry = CacheEntry.from_json(json)
-        return nil if entry.expired?
-        entry
-      rescue
-        nil
       end
     end
 
