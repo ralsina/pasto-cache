@@ -1,3 +1,7 @@
+# USE kemal-cache instead.
+
+----
+
 # Pasto::Cache
 
 A Crystal shard that provides middleware-based HTTP response caching for Kemal applications.
